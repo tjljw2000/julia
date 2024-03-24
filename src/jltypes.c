@@ -1837,7 +1837,315 @@ jl_value_t *normalize_unionalls(jl_value_t *t)
 
 static jl_value_t *_jl_instantiate_type_in_env(jl_value_t *ty, jl_unionall_t *env, jl_value_t **vals, jl_typeenv_t *prev, jl_typestack_t *stack);
 
+static jl_value_t *inst_datatype_inner_original(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
+                                       jl_typestack_t *stack, jl_typeenv_t *env, int check);
+static jl_value_t *inst_datatype_inner_aligned(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
+                                       jl_typestack_t *stack, jl_typeenv_t *env, int check);
+
 static jl_value_t *inst_datatype_inner(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
+                                       jl_typestack_t *stack, jl_typeenv_t *env, int check)
+{
+    // inst_datatype_inner_original(dt, p, iparams, ntp, stack, env, check);
+    jl_value_t *t = inst_datatype_inner_aligned(dt, p, iparams, ntp, stack, env, check);
+    return t;
+}
+
+static jl_value_t *inst_datatype_inner_original(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
+                                       jl_typestack_t *stack, jl_typeenv_t *env, int check)
+{
+    jl_typestack_t top;
+    jl_typename_t *tn = dt->name;
+    int istuple = (tn == jl_tuple_typename);
+    int isnamedtuple = (tn == jl_namedtuple_typename);
+
+    // check if type cache will be applicable
+    int cacheable = 1;
+    if (istuple) {
+        size_t i;
+        for (i = 0; i < ntp; i++) {
+            jl_value_t *pi = iparams[i];
+            if (jl_is_vararg(pi) && jl_unwrap_vararg(pi) == jl_bottom_type) {
+                jl_value_t *va1 = jl_unwrap_vararg_num(pi);
+                if (va1 && jl_is_long(va1)) {
+                    ssize_t nt = jl_unbox_long(va1);
+                    if (nt == 0)
+                        va1 = NULL;
+                    else
+                        pi = jl_bottom_type; // trigger errorf below
+                }
+                // This imposes an implicit constraint that va1==0,
+                // so we keep the Vararg if it has a TypeVar
+                if (va1 == NULL) {
+                    p = NULL;
+                    ntp -= 1;
+                    assert(i == ntp);
+                    break;
+                }
+            }
+            if (pi == jl_bottom_type)
+                jl_errorf("Tuple field type cannot be Union{}");
+            if (cacheable && !jl_is_concrete_type(pi))
+                cacheable = 0;
+        }
+    }
+    else {
+        size_t i;
+        for (i = 0; cacheable && i < ntp; i++)
+            if (jl_has_free_typevars(iparams[i]))
+                cacheable = 0;
+    }
+    // if applicable, check the cache first for a match
+    if (cacheable) {
+        jl_value_t *lkup = (jl_value_t*)lookup_type(tn, iparams, ntp);
+        if (lkup != NULL)
+            return lkup;
+    }
+    // if some normalization might be needed, do that now
+    // it is probably okay to mutate iparams, and we only store globally rooted objects here
+    if (check) {
+        size_t i;
+        for (i = 0; i < ntp; i++) {
+            jl_value_t *pi = iparams[i];
+            if (pi == jl_bottom_type)
+                continue;
+            if (jl_is_datatype(pi))
+                continue;
+            if (jl_is_vararg(pi))
+                // This is already handled in jl_wrap_vararg instead
+                continue;
+            if (!cacheable && jl_has_free_typevars(pi))
+                continue;
+            // normalize types equal to wrappers (prepare for Typeofwrapper)
+            jl_value_t *tw = extract_wrapper(pi);
+            if (tw && tw != pi && (tn != jl_type_typename || jl_typeof(pi) == jl_typeof(tw)) &&
+                    jl_types_equal(pi, tw)) {
+                iparams[i] = tw;
+                if (p) jl_gc_wb(p, tw);
+            }
+        }
+        if (tn == jl_type_typename && jl_is_datatype(iparams[0]) && ((jl_datatype_t*)iparams[0])->name == jl_type_typename &&
+            jl_tparam0(iparams[0]) == jl_bottom_type) {
+            // normalize Type{Type{Union{}}} to Type{TypeofBottom}
+            iparams[0] = (jl_value_t*)jl_typeofbottom_type;
+        }
+    }
+    // then check the cache again, if applicable
+    if (cacheable) {
+        jl_value_t *lkup = (jl_value_t*)lookup_type(tn, iparams, ntp);
+        if (lkup != NULL)
+            return lkup;
+    }
+    jl_value_t *stack_lkup = lookup_type_stack(stack, dt, ntp, iparams);
+    if (stack_lkup)
+        return stack_lkup;
+
+    // check parameters against bounds in type definition
+    // for whether this is even valid
+    if (check && !istuple) {
+        assert(ntp > 0);
+        check_datatype_parameters(tn, iparams, ntp);
+    }
+    else if (ntp == 0 && jl_emptytuple_type != NULL) {
+        // empty tuple type case
+        assert(istuple);
+        return (jl_value_t*)jl_emptytuple_type;
+    }
+
+    jl_datatype_t *ndt = NULL;
+    JL_GC_PUSH2(&p, &ndt);
+
+    jl_value_t *last = iparams[ntp - 1];
+    if (istuple && ntp > 0 && jl_is_vararg(last)) {
+        // normalize Tuple{..., Vararg{Int, 3}} to Tuple{..., Int, Int, Int}
+        jl_value_t *va = jl_unwrap_unionall(last);
+        jl_value_t *va0 = jl_unwrap_vararg(va), *va1 = jl_unwrap_vararg_num(va);
+        // return same `Tuple` object for types equal to it
+        if (ntp == 1 && va0 == (jl_value_t*)jl_any_type && !va1) {
+            JL_GC_POP();
+            return (jl_value_t*)jl_anytuple_type;
+        }
+        if (va1 && jl_is_long(va1)) {
+            ssize_t nt = jl_unbox_long(va1);
+            assert(nt >= 0);
+            if (nt == 0 || !jl_has_free_typevars(va0)) {
+                if (ntp == 1) {
+                    JL_GC_POP();
+                    return jl_tupletype_fill(nt, va0);
+                }
+                size_t i, l;
+                p = jl_alloc_svec(ntp - 1 + nt);
+                for (i = 0, l = ntp - 1; i < l; i++)
+                    jl_svecset(p, i, iparams[i]);
+                l = ntp - 1 + nt;
+                for (; i < l; i++)
+                    jl_svecset(p, i, va0);
+                jl_value_t *ndt = jl_apply_tuple_type(p);
+                JL_GC_POP();
+                return ndt;
+            }
+        }
+    }
+
+    // move array of instantiated parameters to heap; we need to keep it
+    if (p == NULL) {
+        p = jl_alloc_svec_uninit(ntp);
+        for (size_t i = 0; i < ntp; i++)
+            jl_svecset(p, i, iparams[i]);
+    }
+
+    // try to simplify some type parameters
+    if (check && tn != jl_type_typename) {
+        size_t i;
+        int changed = 0;
+        if (istuple) // normalization might change Tuple's, but not other types's, cacheable status
+            cacheable = 1;
+        for (i = 0; i < ntp; i++) {
+            jl_value_t *newp = normalize_unionalls(iparams[i]);
+            if (newp != iparams[i]) {
+                iparams[i] = newp;
+                jl_svecset(p, i, newp);
+                changed = 1;
+            }
+            if (istuple && cacheable && !jl_is_concrete_type(newp))
+                cacheable = 0;
+        }
+        if (changed) {
+            // If this changed something, we need to check the cache again, in
+            // case we missed the match earlier before the normalizations
+            //
+            // e.g. return inst_datatype_inner(dt, p, iparams, ntp, stack, env, 0);
+            if (cacheable) {
+                jl_value_t *lkup = (jl_value_t*)lookup_type(tn, iparams, ntp);
+                if (lkup != NULL) {
+                    JL_GC_POP();
+                    return lkup;
+                }
+            }
+            jl_value_t *stack_lkup = lookup_type_stack(stack, dt, ntp, iparams);
+            if (stack_lkup) {
+                JL_GC_POP();
+                return stack_lkup;
+            }
+        }
+    }
+
+    // acquire the write lock now that we know we need a new object
+    // since we're going to immediately leak it globally via the instantiation stack
+    if (cacheable) {
+        JL_LOCK(&typecache_lock); // Might GC
+        jl_value_t *lkup = (jl_value_t*)lookup_type(tn, iparams, ntp);
+        if (lkup != NULL) {
+            JL_UNLOCK(&typecache_lock); // Might GC
+            JL_GC_POP();
+            return lkup;
+        }
+    }
+
+    // create and initialize new type
+    ndt = jl_new_uninitialized_datatype();
+    ndt->isprimitivetype = dt->isprimitivetype;
+    // Usually dt won't have ismutationfree set at this point, but it is
+    // overriden for `Type`, which we handle here.
+    ndt->ismutationfree = dt->ismutationfree;
+    // associate these parameters with the new type on
+    // the stack, in case one of its field types references it.
+    top.tt = (jl_datatype_t*)ndt;
+    top.prev = stack;
+    stack = &top;
+    ndt->name = tn;
+    jl_gc_wb(ndt, ndt->name);
+    ndt->super = NULL;
+    ndt->parameters = p;
+    jl_gc_wb(ndt, ndt->parameters);
+    ndt->types = NULL; // to be filled in below
+    if (istuple) {
+        ndt->types = p; // TODO: this may need to filter out certain types
+    }
+    else if (isnamedtuple) {
+        jl_value_t *names_tup = jl_svecref(p, 0);
+        jl_value_t *values_tt = jl_svecref(p, 1);
+        if (!jl_has_free_typevars(names_tup) && !jl_has_free_typevars(values_tt)) {
+            if (!jl_is_tuple(names_tup))
+                jl_type_error_rt("NamedTuple", "names", (jl_value_t*)jl_anytuple_type, names_tup);
+            size_t nf = jl_nfields(names_tup);
+            for (size_t i = 0; i < nf; i++) {
+                jl_value_t *ni = jl_fieldref(names_tup, i);
+                if (!jl_is_symbol(ni))
+                    jl_type_error_rt("NamedTuple", "name", (jl_value_t*)jl_symbol_type, ni);
+                for (size_t j = 0; j < i; j++) {
+                    if (ni == jl_fieldref_noalloc(names_tup, j))
+                        jl_errorf("duplicate field name in NamedTuple: \"%s\" is not unique", jl_symbol_name((jl_sym_t*)ni));
+                }
+            }
+            if (!jl_is_datatype(values_tt))
+                jl_error("NamedTuple field type must be a tuple type");
+            if (jl_is_va_tuple((jl_datatype_t*)values_tt) || jl_nparams(values_tt) != nf)
+                jl_error("NamedTuple names and field types must have matching lengths");
+            ndt->types = ((jl_datatype_t*)values_tt)->parameters;
+            jl_gc_wb(ndt, ndt->types);
+        }
+        else {
+            ndt->types = jl_emptysvec; // XXX: this is essentially always false
+        }
+    }
+
+    jl_datatype_t *primarydt = ((jl_datatype_t*)jl_unwrap_unionall(tn->wrapper));
+    jl_precompute_memoized_dt(ndt, cacheable);
+    if (primarydt->layout)
+        jl_compute_field_offsets(ndt);
+
+    if (istuple || isnamedtuple) {
+        ndt->super = jl_any_type;
+    }
+    else if (dt->super) {
+        ndt->super = (jl_datatype_t*)inst_type_w_((jl_value_t*)dt->super, env, stack, check);
+        jl_gc_wb(ndt, ndt->super);
+    }
+    jl_svec_t *ftypes = dt->types;
+    if (ftypes == NULL)
+        ftypes = primarydt->types;
+    if (ftypes == NULL || dt->super == NULL) {
+        // in the process of creating this type definition:
+        // need to instantiate the super and types fields later
+        if (tn->partial == NULL) {
+            tn->partial = jl_alloc_vec_any(0);
+            jl_gc_wb(tn, tn->partial);
+        }
+        jl_array_ptr_1d_push(tn->partial, (jl_value_t*)ndt);
+    }
+    else if (!isnamedtuple && !istuple) {
+        assert(ftypes != jl_emptysvec || jl_field_names(ndt) == jl_emptysvec);
+        assert(ftypes == jl_emptysvec || !ndt->name->abstract);
+        if (ftypes == jl_emptysvec) {
+            ndt->types = ftypes;
+        }
+        else if (cacheable) {
+            // recursively instantiate the types of the fields
+            if (dt->types == NULL)
+                ndt->types = jl_compute_fieldtypes(ndt, stack);
+            else
+                ndt->types = inst_ftypes(ftypes, env, stack);
+            jl_gc_wb(ndt, ndt->types);
+        }
+    }
+
+    // now publish the finished result
+    // XXX: if the stack was used, this will publish in the wrong order,
+    // leading to incorrect layouts and data races (#40050: the A{T} should be
+    // an isbitstype singleton of size 0)
+    if (cacheable) {
+        if (ndt->layout == NULL && ndt->types != NULL && ndt->isconcretetype)
+            jl_compute_field_offsets(ndt);
+        jl_cache_type_(ndt);
+        JL_UNLOCK(&typecache_lock); // Might GC
+    }
+
+    JL_GC_POP();
+    return (jl_value_t*)ndt;
+}
+
+
+static jl_value_t *inst_datatype_inner_aligned(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
                                        jl_typestack_t *stack, jl_typeenv_t *env, int check)
 {
     jl_typestack_t top;

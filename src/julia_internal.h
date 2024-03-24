@@ -339,6 +339,7 @@ jl_value_t *jl_gc_pool_alloc_noinline(jl_ptls_t ptls, int pool_offset,
                                    int osize);
 jl_value_t *jl_gc_big_alloc_noinline(jl_ptls_t ptls, size_t allocsz);
 #ifdef MMTK_GC
+JL_DLLIMPORT jl_value_t *jl_mmtk_gc_alloc_aligned(jl_ptls_t ptls, int pool_offset, int osize, void* ty, int ae_offset);
 JL_DLLIMPORT jl_value_t *jl_mmtk_gc_alloc_default(jl_ptls_t ptls, int pool_offset, int osize, void* ty);
 JL_DLLIMPORT jl_value_t *jl_mmtk_gc_alloc_big(jl_ptls_t ptls, size_t allocsz);
 JL_DLLIMPORT extern void mmtk_post_alloc(void* mutator, void* obj, size_t bytes, int allocator);
@@ -506,6 +507,40 @@ STATIC_INLINE jl_value_t *jl_gc_alloc_(jl_ptls_t ptls, size_t sz, void *ty)
     maybe_record_alloc_to_profile(v, sz, (jl_datatype_t*)ty);
     return v;
 }
+
+#ifndef AE_FIELD_WIDTH
+#define AE_FIELD_WIDTH 3
+#endif
+
+extern const int ae_max_align_words;
+extern const int ae_field_shift;
+extern const int ae_alignment_increment;
+extern const uintptr_t ae_pattern_mask;
+
+STATIC_INLINE jl_value_t *jl_gc_alloc_aligned(jl_ptls_t ptls, size_t sz, void *ty, int align_code)
+{
+    jl_value_t *v;
+    sz += (ae_max_align_words << ae_field_shift);
+    const size_t allocsz = sz + sizeof(jl_taggedvalue_t);
+    if (sz <= GC_MAX_SZCLASS) {
+        int pool_id = jl_gc_szclass(allocsz);
+        int osize = jl_gc_sizeclasses[pool_id];
+        v = jl_mmtk_gc_alloc_aligned(ptls, pool_id, osize, ty, align_code);
+        // v = jl_mmtk_gc_alloc_default(ptls, pool_id, osize, ty);
+    }
+    else {
+        if (allocsz < sz) // overflow in adding offs, size was "negative"
+            jl_throw(jl_memory_exception);
+        v = jl_mmtk_gc_alloc_big(ptls, allocsz);
+    }
+
+    // printf("addr: %p, code: %d\n", (void *)v, align_code);
+
+    jl_set_typeof(v, ty);
+    maybe_record_alloc_to_profile(v, sz, (jl_datatype_t*)ty);
+    return v;
+}
+
 #endif // MMTK_GC
 
 /* Programming style note: When using jl_gc_alloc, do not JL_GC_PUSH it into a
@@ -764,6 +799,7 @@ int jl_find_union_component(jl_value_t *haystack, jl_value_t *needle, unsigned *
 jl_datatype_t *jl_new_abstracttype(jl_value_t *name, jl_module_t *module,
                                    jl_datatype_t *super, jl_svec_t *parameters);
 jl_datatype_t *jl_new_uninitialized_datatype(void);
+jl_datatype_t *jl_new_uninitialized_datatype_aligned(int alignment);
 void jl_precompute_memoized_dt(jl_datatype_t *dt, int cacheable);
 JL_DLLEXPORT jl_datatype_t *jl_wrap_Type(jl_value_t *t);  // x -> Type{x}
 jl_vararg_t *jl_wrap_vararg(jl_value_t *t, jl_value_t *n, int check);

@@ -92,6 +92,32 @@ jl_datatype_t *jl_new_abstracttype(jl_value_t *name, jl_module_t *module, jl_dat
     return jl_new_datatype((jl_sym_t*)name, module, super, parameters, jl_emptysvec, jl_emptysvec, jl_emptysvec, 1, 0, 0);
 }
 
+jl_datatype_t *jl_new_uninitialized_datatype_aligned(int alignment)
+{
+    jl_task_t *ct = jl_current_task;
+    jl_datatype_t *t = (jl_datatype_t*)jl_gc_alloc_aligned(ct->ptls, sizeof(jl_datatype_t), jl_datatype_type, alignment);
+    jl_set_typetagof(t, jl_datatype_tag, 0);
+    t->hash = 0;
+    t->hasfreetypevars = 0;
+    t->isdispatchtuple = 0;
+    t->isbitstype = 0;
+    t->isprimitivetype = 0;
+    t->zeroinit = 0;
+    t->has_concrete_subtype = 1;
+    t->maybe_subtype_of_cache = 1;
+    t->ismutationfree = 0;
+    t->isidentityfree = 0;
+    t->smalltag = 0;
+    t->name = NULL;
+    t->super = NULL;
+    t->parameters = NULL;
+    t->layout = NULL;
+    t->types = NULL;
+    t->instance = NULL;
+    return t;
+}
+
+
 jl_datatype_t *jl_new_uninitialized_datatype(void)
 {
     jl_task_t *ct = jl_current_task;
@@ -695,7 +721,7 @@ static int is_anonfn_typename(char *name)
     return other > &name[1] && is10digit(other[1]);
 }
 
-JL_DLLEXPORT jl_datatype_t *jl_new_datatype(
+JL_DLLEXPORT jl_datatype_t *jl_new_datatype_aligned(
         jl_sym_t *name,
         jl_module_t *module,
         jl_datatype_t *super,
@@ -704,7 +730,7 @@ JL_DLLEXPORT jl_datatype_t *jl_new_datatype(
         jl_svec_t *ftypes,
         jl_svec_t *fattrs,
         int abstract, int mutabl,
-        int ninitialized)
+        int ninitialized, int alignment)
 {
     jl_datatype_t *t = NULL;
     jl_typename_t *tn = NULL;
@@ -713,7 +739,9 @@ JL_DLLEXPORT jl_datatype_t *jl_new_datatype(
     assert(parameters);
 
     // init enough before possibly calling jl_new_typename_in
-    t = jl_new_uninitialized_datatype();
+    t = jl_new_uninitialized_datatype_aligned(alignment);
+    // t = jl_new_uninitialized_datatype();
+
     t->super = super;
     if (super != NULL) jl_gc_wb(t, t->super);
     t->parameters = parameters;
@@ -814,6 +842,55 @@ JL_DLLEXPORT jl_datatype_t *jl_new_datatype(
     JL_GC_POP();
     return t;
 }
+
+
+#ifndef AE_FIELD_WIDTH
+#define AE_FIELD_WIDTH 3
+#endif
+
+extern const int ae_max_align_words;
+extern const int ae_field_shift;
+extern const int ae_alignment_increment;
+extern const uintptr_t ae_pattern_mask;
+
+enum ae_patterns {
+    AE_FALLBACK = (1 << AE_FIELD_WIDTH) - 1, // 7
+    AE_REFARRAY = AE_FALLBACK - 1, // 6
+    AE_NOREF = 0,
+    AE_REF_1 = 1, // 16
+    AE_REF_2 = 2, // 24, 32, 40
+    AE_REF_3 = 3, // 48, 56, 64
+    AE_REF_4 = 4, // 32
+    AE_REF_5 = 5, // 16, 24
+};
+
+JL_DLLEXPORT jl_datatype_t *jl_new_datatype(
+        jl_sym_t *name,
+        jl_module_t *module,
+        jl_datatype_t *super,
+        jl_svec_t *parameters,
+        jl_svec_t *fnames,
+        jl_svec_t *ftypes,
+        jl_svec_t *fattrs,
+        int abstract, int mutabl,
+        int ninitialized)
+{ 
+    // printf("new_datatype: %s\n", jl_symbol_name(name));
+    jl_datatype_t *t = jl_new_datatype_aligned(name, module, super, parameters, fnames, ftypes, fattrs, abstract, mutabl, ninitialized, AE_FALLBACK);
+    // jl_datatype_t *t = jl_new_datatype(name, module, super, parameters, fnames, ftypes, fattrs, abstract, mutabl, ninitialized);
+    
+    // printf("layout@%p, npointers:%u\n",
+    //     t->layout, t->layout->size);
+    // int ae_code = ae_get_pattern(t);
+    // int ae_code = rand() % 8;
+    // jl_datatype_t *t_encoded = jl_new_datatype_aligned(name, module, super, parameters, fnames, ftypes, fattrs, abstract, mutabl, ninitialized, ae_code);
+    // printf("%p: expect %d, got %d\n", (void *)t, ae_code, ae_get_code((uintptr_t)t));
+
+    // printf("%p: expect %d, got %d, but pattern %d.\n", (void *)t_encoded, ae_code, ae_get_code((uintptr_t)t_encoded), ae_get_pattern(t));
+    // assert(ae_get_code(t_encoded) == ae_code);
+    return t;
+}
+
 
 JL_DLLEXPORT jl_datatype_t *jl_new_primitivetype(jl_value_t *name, jl_module_t *module,
                                                  jl_datatype_t *super,
