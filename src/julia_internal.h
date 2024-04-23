@@ -517,6 +517,8 @@ extern const int ae_field_shift;
 extern const int ae_alignment_increment;
 extern const uintptr_t ae_pattern_mask;
 
+JL_DLLIMPORT uintptr_t ae_adjust_region(uintptr_t t, int alignment, int padding_size);
+
 STATIC_INLINE jl_value_t *jl_gc_alloc_aligned(jl_ptls_t ptls, size_t sz, void *ty, int align_code)
 {
     jl_value_t *v;
@@ -531,7 +533,8 @@ STATIC_INLINE jl_value_t *jl_gc_alloc_aligned(jl_ptls_t ptls, size_t sz, void *t
     else {
         if (allocsz < sz) // overflow in adding offs, size was "negative"
             jl_throw(jl_memory_exception);
-        v = jl_mmtk_gc_alloc_big(ptls, allocsz);
+        jl_value_t *v_raw = jl_mmtk_gc_alloc_big(ptls, allocsz);
+        v = (jl_value_t *)ae_adjust_region((uintptr_t)v_raw, align_code, (ae_max_align_words << ae_field_shift));
     }
 
     // printf("addr: %p, code: %d\n", (void *)v, align_code);

@@ -3068,7 +3068,7 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image, jl
                 if (newdt == NULL) {
                     // make a non-owned copy of obj so we don't accidentally
                     // assume this is the unique copy later
-                    newdt = jl_new_uninitialized_datatype();
+                    newdt = jl_new_uninitialized_datatype_aligned(7);
                     jl_astaggedvalue(newdt)->bits.gc = GC_OLD;
                     // leave most fields undefined for now, but we may need instance later,
                     // and we overwrite the name field (field 0) now so preserve it too

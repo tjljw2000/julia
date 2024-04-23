@@ -558,6 +558,7 @@ void *jl_gc_perm_alloc(size_t sz, int zero, unsigned align, unsigned offset)
 
 void jl_gc_notify_image_load(const char* img_data, size_t len)
 {
+    // printf("Load image at %p ~ %p (len: %ld)\n", (void*)img_data, (void*)img_data+len, len);
     mmtk_set_vm_space((void*)img_data, len);
 }
 

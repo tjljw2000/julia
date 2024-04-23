@@ -1845,8 +1845,9 @@ static jl_value_t *inst_datatype_inner_aligned(jl_datatype_t *dt, jl_svec_t *p, 
 static jl_value_t *inst_datatype_inner(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
                                        jl_typestack_t *stack, jl_typeenv_t *env, int check)
 {
-    // inst_datatype_inner_original(dt, p, iparams, ntp, stack, env, check);
+    // jl_value_t *t = inst_datatype_inner_original(dt, p, iparams, ntp, stack, env, check);
     jl_value_t *t = inst_datatype_inner_aligned(dt, p, iparams, ntp, stack, env, check);
+    // printf("julia: %s@%x | inst_datatype_inner\n", jl_typename_str(t), t);
     return t;
 }
 
@@ -2042,7 +2043,7 @@ static jl_value_t *inst_datatype_inner_original(jl_datatype_t *dt, jl_svec_t *p,
     }
 
     // create and initialize new type
-    ndt = jl_new_uninitialized_datatype();
+    ndt = jl_new_uninitialized_datatype_aligned(7);
     ndt->isprimitivetype = dt->isprimitivetype;
     // Usually dt won't have ismutationfree set at this point, but it is
     // overriden for `Type`, which we handle here.
@@ -2139,6 +2140,7 @@ static jl_value_t *inst_datatype_inner_original(jl_datatype_t *dt, jl_svec_t *p,
         jl_cache_type_(ndt);
         JL_UNLOCK(&typecache_lock); // Might GC
     }
+    printf("julia: %s@%x\n", jl_typename_str(ndt), ndt);
 
     JL_GC_POP();
     return (jl_value_t*)ndt;
@@ -2247,7 +2249,8 @@ static jl_value_t *inst_datatype_inner_aligned(jl_datatype_t *dt, jl_svec_t *p, 
     }
 
     jl_datatype_t *ndt = NULL;
-    JL_GC_PUSH2(&p, &ndt);
+    jl_datatype_t *tmp = NULL;
+    JL_GC_PUSH3(&p, &ndt, &tmp);
 
     jl_value_t *last = iparams[ntp - 1];
     if (istuple && ntp > 0 && jl_is_vararg(last)) {
@@ -2337,7 +2340,113 @@ static jl_value_t *inst_datatype_inner_aligned(jl_datatype_t *dt, jl_svec_t *p, 
     }
 
     // create and initialize new type
-    ndt = jl_new_uninitialized_datatype();
+    tmp = jl_new_uninitialized_datatype_aligned(7);
+    tmp->isprimitivetype = dt->isprimitivetype;
+    // Usually dt won't have ismutationfree set at this point, but it is
+    // overriden for `Type`, which we handle here.
+    tmp->ismutationfree = dt->ismutationfree;
+    // associate these parameters with the new type on
+    // the stack, in case one of its field types references it.
+    // NOTE: do not add for tmp
+    // top.tt = (jl_datatype_t*)ndt;
+    // top.prev = stack;
+    // stack = &top;
+    tmp->name = tn;
+    jl_gc_wb(tmp, tmp->name);
+    tmp->super = NULL;
+    tmp->parameters = p;
+    jl_gc_wb(tmp, tmp->parameters);
+    tmp->types = NULL; // to be filled in below
+    if (istuple) {
+        tmp->types = p; // TODO: this may need to filter out certain types
+    }
+    else if (isnamedtuple) {
+        jl_value_t *names_tup = jl_svecref(p, 0);
+        jl_value_t *values_tt = jl_svecref(p, 1);
+        if (!jl_has_free_typevars(names_tup) && !jl_has_free_typevars(values_tt)) {
+            if (!jl_is_tuple(names_tup))
+                jl_type_error_rt("NamedTuple", "names", (jl_value_t*)jl_anytuple_type, names_tup);
+            size_t nf = jl_nfields(names_tup);
+            for (size_t i = 0; i < nf; i++) {
+                jl_value_t *ni = jl_fieldref(names_tup, i);
+                if (!jl_is_symbol(ni))
+                    jl_type_error_rt("NamedTuple", "name", (jl_value_t*)jl_symbol_type, ni);
+                for (size_t j = 0; j < i; j++) {
+                    if (ni == jl_fieldref_noalloc(names_tup, j))
+                        jl_errorf("duplicate field name in NamedTuple: \"%s\" is not unique", jl_symbol_name((jl_sym_t*)ni));
+                }
+            }
+            if (!jl_is_datatype(values_tt))
+                jl_error("NamedTuple field type must be a tuple type");
+            if (jl_is_va_tuple((jl_datatype_t*)values_tt) || jl_nparams(values_tt) != nf)
+                jl_error("NamedTuple names and field types must have matching lengths");
+            tmp->types = ((jl_datatype_t*)values_tt)->parameters;
+            jl_gc_wb(tmp, tmp->types);
+        }
+        else {
+            tmp->types = jl_emptysvec; // XXX: this is essentially always false
+        }
+    }
+
+    jl_datatype_t *primarydt = ((jl_datatype_t*)jl_unwrap_unionall(tn->wrapper));
+    jl_precompute_memoized_dt(tmp, cacheable);
+    if (primarydt->layout)
+        jl_compute_field_offsets(tmp);
+
+    if (istuple || isnamedtuple) {
+        tmp->super = jl_any_type;
+    }
+    else if (dt->super) {
+        tmp->super = (jl_datatype_t*)inst_type_w_((jl_value_t*)dt->super, env, stack, check);
+        jl_gc_wb(tmp, tmp->super);
+    }
+    jl_svec_t *ftypes = dt->types;
+    if (ftypes == NULL)
+        ftypes = primarydt->types;
+    if (ftypes == NULL || dt->super == NULL) {
+        // in the process of creating this type definition:
+        // need to instantiate the super and types fields later
+        if (tn->partial == NULL) {
+            tn->partial = jl_alloc_vec_any(0);
+            jl_gc_wb(tn, tn->partial);
+        }
+        jl_array_ptr_1d_push(tn->partial, (jl_value_t*)tmp);
+    }
+    else if (!isnamedtuple && !istuple) {
+        assert(ftypes != jl_emptysvec || jl_field_names(tmp) == jl_emptysvec);
+        assert(ftypes == jl_emptysvec || !tmp->name->abstract);
+        if (ftypes == jl_emptysvec) {
+            tmp->types = ftypes;
+        }
+        else if (cacheable) {
+            // recursively instantiate the types of the fields
+            if (dt->types == NULL)
+                tmp->types = jl_compute_fieldtypes(tmp, stack);
+            else
+                tmp->types = inst_ftypes(ftypes, env, stack);
+            jl_gc_wb(tmp, tmp->types);
+        }
+    }
+
+    // now publish the finished result
+    // XXX: if the stack was used, this will publish in the wrong order,
+    // leading to incorrect layouts and data races (#40050: the A{T} should be
+    // an isbitstype singleton of size 0)
+    if (cacheable) {
+        if (tmp->layout == NULL && tmp->types != NULL && tmp->isconcretetype)
+            jl_compute_field_offsets(tmp);
+        // NOTE: don't cache tmp
+        // jl_cache_type_(tmp);
+        // JL_UNLOCK(&typecache_lock); // Might GC
+    }
+
+    // int alignment = ae_get_pattern(tmp);
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+
+    // create and initialize new type
+    ndt = jl_new_uninitialized_datatype_aligned(7);
     ndt->isprimitivetype = dt->isprimitivetype;
     // Usually dt won't have ismutationfree set at this point, but it is
     // overriden for `Type`, which we handle here.
@@ -2384,7 +2493,7 @@ static jl_value_t *inst_datatype_inner_aligned(jl_datatype_t *dt, jl_svec_t *p, 
         }
     }
 
-    jl_datatype_t *primarydt = ((jl_datatype_t*)jl_unwrap_unionall(tn->wrapper));
+    primarydt = ((jl_datatype_t*)jl_unwrap_unionall(tn->wrapper));
     jl_precompute_memoized_dt(ndt, cacheable);
     if (primarydt->layout)
         jl_compute_field_offsets(ndt);
@@ -2396,7 +2505,7 @@ static jl_value_t *inst_datatype_inner_aligned(jl_datatype_t *dt, jl_svec_t *p, 
         ndt->super = (jl_datatype_t*)inst_type_w_((jl_value_t*)dt->super, env, stack, check);
         jl_gc_wb(ndt, ndt->super);
     }
-    jl_svec_t *ftypes = dt->types;
+    ftypes = dt->types;
     if (ftypes == NULL)
         ftypes = primarydt->types;
     if (ftypes == NULL || dt->super == NULL) {
@@ -2851,14 +2960,14 @@ void jl_init_types(void) JL_GC_DISABLED
     jl_module_t *core = NULL; // will need to be assigned later
 
     // create base objects
-    jl_datatype_type = jl_new_uninitialized_datatype();
+    jl_datatype_type = jl_new_uninitialized_datatype_aligned(7);
     XX(datatype);
-    jl_typename_type = jl_new_uninitialized_datatype();
-    jl_symbol_type = jl_new_uninitialized_datatype();
+    jl_typename_type = jl_new_uninitialized_datatype_aligned(7);
+    jl_symbol_type = jl_new_uninitialized_datatype_aligned(7);
     XX(symbol);
-    jl_simplevector_type = jl_new_uninitialized_datatype();
+    jl_simplevector_type = jl_new_uninitialized_datatype_aligned(7);
     XX(simplevector);
-    jl_methtable_type = jl_new_uninitialized_datatype();
+    jl_methtable_type = jl_new_uninitialized_datatype_aligned(7);
 
     jl_emptysvec = (jl_svec_t*)jl_gc_permobj(sizeof(void*), jl_simplevector_type);
     jl_set_typetagof(jl_emptysvec, jl_simplevector_tag, GC_OLD_MARKED);

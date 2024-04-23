@@ -96,6 +96,7 @@ jl_datatype_t *jl_new_uninitialized_datatype_aligned(int alignment)
 {
     jl_task_t *ct = jl_current_task;
     jl_datatype_t *t = (jl_datatype_t*)jl_gc_alloc_aligned(ct->ptls, sizeof(jl_datatype_t), jl_datatype_type, alignment);
+    // printf("julia: %x - %d\n", t, ae_get_code(t));
     jl_set_typetagof(t, jl_datatype_tag, 0);
     t->hash = 0;
     t->hasfreetypevars = 0;
@@ -840,6 +841,7 @@ JL_DLLEXPORT jl_datatype_t *jl_new_datatype_aligned(
         jl_compute_field_offsets(t);
 
     JL_GC_POP();
+    // printf("julia: %s@%x - %x | new_datatype_aligned\n", jl_typename_str(t), t, t);
     return t;
 }
 
@@ -888,6 +890,7 @@ JL_DLLEXPORT jl_datatype_t *jl_new_datatype(
 
     // printf("%p: expect %d, got %d, but pattern %d.\n", (void *)t_encoded, ae_code, ae_get_code((uintptr_t)t_encoded), ae_get_pattern(t));
     // assert(ae_get_code(t_encoded) == ae_code);
+    // printf("julia: %s@%x - %d | new_datatype\n", jl_typename_str(t), t);
     return t;
 }
 
