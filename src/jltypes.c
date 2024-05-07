@@ -1842,12 +1842,13 @@ static jl_value_t *inst_datatype_inner_original(jl_datatype_t *dt, jl_svec_t *p,
 static jl_value_t *inst_datatype_inner_aligned(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
                                        jl_typestack_t *stack, jl_typeenv_t *env, int check);
 
+JL_DLLIMPORT int ae_get_pattern(jl_datatype_t *);
+
 static jl_value_t *inst_datatype_inner(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
                                        jl_typestack_t *stack, jl_typeenv_t *env, int check)
 {
     // jl_value_t *t = inst_datatype_inner_original(dt, p, iparams, ntp, stack, env, check);
     jl_value_t *t = inst_datatype_inner_aligned(dt, p, iparams, ntp, stack, env, check);
-    // printf("julia: %s@%x | inst_datatype_inner\n", jl_typename_str(t), t);
     return t;
 }
 
@@ -2140,7 +2141,7 @@ static jl_value_t *inst_datatype_inner_original(jl_datatype_t *dt, jl_svec_t *p,
         jl_cache_type_(ndt);
         JL_UNLOCK(&typecache_lock); // Might GC
     }
-    printf("julia: %s@%x\n", jl_typename_str(ndt), ndt);
+    // printf("julia: %s@%x\n", jl_typename_str(ndt), ndt);
 
     JL_GC_POP();
     return (jl_value_t*)ndt;
@@ -2440,13 +2441,10 @@ static jl_value_t *inst_datatype_inner_aligned(jl_datatype_t *dt, jl_svec_t *p, 
         // JL_UNLOCK(&typecache_lock); // Might GC
     }
 
-    // int alignment = ae_get_pattern(tmp);
-
-
 ////////////////////////////////////////////////////////////////////////////////////////////////
-
+    int alignment = ae_get_pattern(tmp);
     // create and initialize new type
-    ndt = jl_new_uninitialized_datatype_aligned(7);
+    ndt = jl_new_uninitialized_datatype_aligned(alignment);
     ndt->isprimitivetype = dt->isprimitivetype;
     // Usually dt won't have ismutationfree set at this point, but it is
     // overriden for `Type`, which we handle here.

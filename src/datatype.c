@@ -684,11 +684,15 @@ void jl_compute_field_offsets(jl_datatype_t *st)
         else
             pointers = (uint32_t*)alloca(npointers * sizeof(uint32_t));
         size_t ptr_i = 0;
+        // printf("%s@%p: ", jl_symbol_name(st), (void *)st);
         for (i = 0; i < nfields; i++) {
             jl_value_t *fld = jl_field_type(st, i);
             uint32_t offset = desc[i].offset / sizeof(jl_value_t**);
-            if (desc[i].isptr)
+            if (desc[i].isptr) 
+            // if (desc[i].isptr) {
                 pointers[ptr_i++] = offset;
+                // printf("%d ", offset);
+            // }
             else if (jl_is_datatype(fld)) {
                 int j, npointers = ((jl_datatype_t*)fld)->layout->npointers;
                 for (j = 0; j < npointers; j++) {
@@ -696,6 +700,7 @@ void jl_compute_field_offsets(jl_datatype_t *st)
                 }
             }
         }
+        // printf("\n");
         assert(ptr_i == npointers);
         st->layout = jl_get_layout(sz, nfields, npointers, alignm, haspadding, desc, pointers);
         if (should_malloc) {
@@ -845,6 +850,7 @@ JL_DLLEXPORT jl_datatype_t *jl_new_datatype_aligned(
     return t;
 }
 
+JL_DLLIMPORT int ae_get_pattern(jl_datatype_t *);
 
 #ifndef AE_FIELD_WIDTH
 #define AE_FIELD_WIDTH 3
@@ -855,16 +861,17 @@ extern const int ae_field_shift;
 extern const int ae_alignment_increment;
 extern const uintptr_t ae_pattern_mask;
 
-enum ae_patterns {
+typedef enum {
     AE_FALLBACK = (1 << AE_FIELD_WIDTH) - 1, // 7
-    AE_REFARRAY = AE_FALLBACK - 1, // 6
+    // AE_REFARRAY = AE_FALLBACK - 1, // 6
     AE_NOREF = 0,
-    AE_REF_1 = 1, // 16
-    AE_REF_2 = 2, // 24, 32, 40
-    AE_REF_3 = 3, // 48, 56, 64
-    AE_REF_4 = 4, // 32
-    AE_REF_5 = 5, // 16, 24
-};
+    AE_REF_01 = 1, // 16
+    AE_REF_12 = 2, // 24, 32, 40
+    AE_REF_01234 = 3, // 48, 56, 64
+    AE_REF_0 = 4, // 32
+    AE_REF_1234 = 5, // 16, 24
+    AE_REF_0123456 = 6,
+} AE_PATTERN;
 
 JL_DLLEXPORT jl_datatype_t *jl_new_datatype(
         jl_sym_t *name,
@@ -877,20 +884,13 @@ JL_DLLEXPORT jl_datatype_t *jl_new_datatype(
         int abstract, int mutabl,
         int ninitialized)
 { 
-    // printf("new_datatype: %s\n", jl_symbol_name(name));
     jl_datatype_t *t = jl_new_datatype_aligned(name, module, super, parameters, fnames, ftypes, fattrs, abstract, mutabl, ninitialized, AE_FALLBACK);
-    // jl_datatype_t *t = jl_new_datatype(name, module, super, parameters, fnames, ftypes, fattrs, abstract, mutabl, ninitialized);
-    
-    // printf("layout@%p, npointers:%u\n",
-    //     t->layout, t->layout->size);
-    // int ae_code = ae_get_pattern(t);
-    // int ae_code = rand() % 8;
-    // jl_datatype_t *t_encoded = jl_new_datatype_aligned(name, module, super, parameters, fnames, ftypes, fattrs, abstract, mutabl, ninitialized, ae_code);
-    // printf("%p: expect %d, got %d\n", (void *)t, ae_code, ae_get_code((uintptr_t)t));
-
-    // printf("%p: expect %d, got %d, but pattern %d.\n", (void *)t_encoded, ae_code, ae_get_code((uintptr_t)t_encoded), ae_get_pattern(t));
-    // assert(ae_get_code(t_encoded) == ae_code);
-    // printf("julia: %s@%x - %d | new_datatype\n", jl_typename_str(t), t);
+    if (t->name == jl_array_typename) {
+        printf("new array\n");
+    } else {
+        int alignment = ae_get_pattern(t);
+        t = jl_new_datatype_aligned(name, module, super, parameters, fnames, ftypes, fattrs, abstract, mutabl, ninitialized, alignment);
+    }
     return t;
 }
 
