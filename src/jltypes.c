@@ -1842,7 +1842,6 @@ static jl_value_t *inst_datatype_inner_original(jl_datatype_t *dt, jl_svec_t *p,
 static jl_value_t *inst_datatype_inner_aligned(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
                                        jl_typestack_t *stack, jl_typeenv_t *env, int check);
 
-JL_DLLIMPORT int ae_get_pattern(jl_datatype_t *);
 
 static jl_value_t *inst_datatype_inner(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
                                        jl_typestack_t *stack, jl_typeenv_t *env, int check)
@@ -2147,6 +2146,7 @@ static jl_value_t *inst_datatype_inner_original(jl_datatype_t *dt, jl_svec_t *p,
     return (jl_value_t*)ndt;
 }
 
+JL_DLLIMPORT int ae_get_pattern(jl_datatype_t *);
 
 static jl_value_t *inst_datatype_inner_aligned(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
                                        jl_typestack_t *stack, jl_typeenv_t *env, int check)
