@@ -1851,7 +1851,7 @@ static jl_value_t *inst_datatype_inner(jl_datatype_t *dt, jl_svec_t *p, jl_value
     return t;
 }
 
-static jl_value_t *inst_datatype_inner_original(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
+static inline jl_value_t *inst_datatype_inner_original(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
                                        jl_typestack_t *stack, jl_typeenv_t *env, int check)
 {
     jl_typestack_t top;
@@ -2140,14 +2140,14 @@ static jl_value_t *inst_datatype_inner_original(jl_datatype_t *dt, jl_svec_t *p,
         jl_cache_type_(ndt);
         JL_UNLOCK(&typecache_lock); // Might GC
     }
-    printf("julia: %s@%x\n", jl_typename_str(ndt), ndt);
+    // printf("julia: %s@%x\n", jl_typename_str(ndt), ndt);
 
     JL_GC_POP();
     return (jl_value_t*)ndt;
 }
 
 
-static jl_value_t *inst_datatype_inner_aligned(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
+static inline jl_value_t *inst_datatype_inner_aligned(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
                                        jl_typestack_t *stack, jl_typeenv_t *env, int check)
 {
     jl_typestack_t top;

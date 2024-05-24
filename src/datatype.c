@@ -722,7 +722,7 @@ static int is_anonfn_typename(char *name)
     return other > &name[1] && is10digit(other[1]);
 }
 
-JL_DLLEXPORT jl_datatype_t *jl_new_datatype_aligned(
+static inline jl_datatype_t *jl_new_datatype_aligned(
         jl_sym_t *name,
         jl_module_t *module,
         jl_datatype_t *super,
@@ -880,6 +880,7 @@ JL_DLLEXPORT jl_datatype_t *jl_new_datatype(
     // printf("new_datatype: %s\n", jl_symbol_name(name));
     jl_datatype_t *t = jl_new_datatype_aligned(name, module, super, parameters, fnames, ftypes, fattrs, abstract, mutabl, ninitialized, AE_FALLBACK);
     // jl_datatype_t *t = jl_new_datatype(name, module, super, parameters, fnames, ftypes, fattrs, abstract, mutabl, ninitialized);
+    t = jl_new_datatype_aligned(name, module, super, parameters, fnames, ftypes, fattrs, abstract, mutabl, ninitialized, AE_FALLBACK);
     
     // printf("layout@%p, npointers:%u\n",
     //     t->layout, t->layout->size);
